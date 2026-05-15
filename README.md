@@ -132,7 +132,7 @@ src
 ## 1️⃣ Clone Repository
 
 ```bash
-git clone YOUR_GITHUB_REPOSITORY_URL
+git clone (https://github.com/navee-d18/firebase-social-app.git)
 ```
 
 ---
@@ -170,7 +170,7 @@ Create a new Firebase project.
 Enable:
 
 * Email/Password Authentication
-* Google Authentication (optional)
+* Google Authentication
 
 ---
 
