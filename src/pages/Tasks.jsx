@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { collection, query, where, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, deleteDoc, arrayUnion, orderBy, getDocs } from 'firebase/firestore';
 import { db } from '../utils/firebase';
 import { useAuth } from '../context/AuthContext';
-import { FiCheckSquare, FiPlus, FiTrash2, FiUsers, FiClock, FiFlag, FiEdit2 } from 'react-icons/fi';
+import { FiCheckSquare, FiPlus, FiTrash2, FiUsers, FiClock, FiFlag, FiEdit2, FiCpu, FiLayout, FiList, FiAlertCircle } from 'react-icons/fi';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
 
@@ -11,15 +11,14 @@ function Tasks() {
   const [taskLists, setTaskLists] = useState([]);
   const [activeList, setActiveList] = useState(null);
   const [tasks, setTasks] = useState([]);
+  const [viewMode, setViewMode] = useState('kanban'); // 'list' or 'kanban'
   const [newListTitle, setNewListTitle] = useState('');
   const [newTaskText, setNewTaskText] = useState('');
+  const [taskPriority, setTaskPriority] = useState('medium'); 
   const [showNewListModal, setShowNewListModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
-  const [showEditListModal, setShowEditListModal] = useState(false);
+  const [isAiGenerating, setIsAiGenerating] = useState(false);
   const [friends, setFriends] = useState([]);
-  const [editingTask, setEditingTask] = useState(null);
-  const [editingTaskText, setEditingTaskText] = useState('');
-  const [editListTitle, setEditListTitle] = useState('');
 
   // Fetch task lists (owned or shared)
   useEffect(() => {
@@ -29,7 +28,9 @@ function Tasks() {
       where('participants', 'array-contains', currentUser.uid)
     );
     const unsub = onSnapshot(q, (snap) => {
-      setTaskLists(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const lists = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setTaskLists(lists);
+      if (!activeList && lists.length > 0) setActiveList(lists[0]);
     });
     return unsub;
   }, [currentUser]);
@@ -40,384 +41,353 @@ function Tasks() {
     const q = query(collection(db, `taskLists/${activeList.id}/tasks`));
     const unsub = onSnapshot(q, (snap) => {
       const fetchedTasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      // Manual sort to avoid index errors
-      fetchedTasks.sort((a, b) => {
-        const tA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
-        const tB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
-        return tB - tA;
-      });
+      fetchedTasks.sort((a, b) => (b.createdAt?.toMillis || 0) - (a.createdAt?.toMillis || 0));
       setTasks(fetchedTasks);
     });
     return unsub;
   }, [activeList]);
 
-  // Fetch friends for sharing
-  useEffect(() => {
-    const fetchFriends = async () => {
-      if (!userData?.friends?.length) return;
-      const q = query(collection(db, 'users'), where('uid', 'in', userData.friends));
-      const snap = await getDocs(q);
-      setFriends(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    };
-    if (showShareModal) fetchFriends();
-  }, [showShareModal, userData]);
-
-  const handleCreateList = async (e) => {
-    e.preventDefault();
-    if (!newListTitle.trim()) return;
-    try {
-      const newList = await addDoc(collection(db, 'taskLists'), {
-        title: newListTitle.trim(),
-        ownerId: currentUser.uid,
-        participants: [currentUser.uid],
-        createdAt: serverTimestamp()
-      });
-      setNewListTitle('');
-      setShowNewListModal(false);
-      toast.success("List created!");
-    } catch (err) {
-      toast.error("Failed to create list");
-    }
-  };
-
-  const handleAddTask = async (e) => {
-    e.preventDefault();
-    if (!newTaskText.trim() || !activeList) return;
+  const handleAddTask = async (e, customText = null, status = 'todo') => {
+    if (e) e.preventDefault();
+    const text = customText || newTaskText;
+    if (!text.trim() || !activeList) return;
+    
     try {
       await addDoc(collection(db, `taskLists/${activeList.id}/tasks`), {
-        text: newTaskText.trim(),
+        text: text.trim(),
         completed: false,
+        status: status,
+        priority: customText ? 'medium' : taskPriority,
         createdBy: currentUser.uid,
         createdAt: serverTimestamp()
       });
-      setNewTaskText('');
+      if (!customText) {
+        setNewTaskText('');
+        setTaskPriority('medium');
+      }
     } catch (err) {
-      toast.error("Failed to add task");
+      toast.error("Nexus Link Failed");
     }
   };
 
-  const toggleTask = async (task) => {
-    try {
-      const currentStatus = task.completed;
-      await updateDoc(doc(db, `taskLists/${activeList.id}/tasks`, task.id), {
-        completed: !currentStatus
-      });
-      if (!currentStatus) updateXP(5); // Reward for completing task
-    } catch (err) {
-      toast.error("Update failed");
-    }
-  };
-
-  const handleDeleteTask = async (taskId) => {
-    try {
-      await deleteDoc(doc(db, `taskLists/${activeList.id}/tasks`, taskId));
-    } catch (err) {
-      toast.error("Delete failed");
-    }
-  };
-
-  const handleEditTask = async (taskId) => {
-    if (!editingTaskText.trim()) return;
+  const updateTaskPriority = async (taskId, currentPriority) => {
+    const priorities = ['low', 'medium', 'high'];
+    const nextPriority = priorities[(priorities.indexOf(currentPriority) + 1) % 3];
     try {
       await updateDoc(doc(db, `taskLists/${activeList.id}/tasks`, taskId), {
-        text: editingTaskText.trim()
+        priority: nextPriority
       });
-      setEditingTask(null);
-      toast.success("Task updated");
     } catch (err) {
-      toast.error("Update failed");
+      toast.error("Priority Update Failed");
     }
   };
 
-  const handleUpdateListTitle = async (e) => {
-    e.preventDefault();
-    if (!editListTitle.trim()) return;
+  const updateTaskStatus = async (taskId, newStatus) => {
     try {
-      await updateDoc(doc(db, 'taskLists', activeList.id), {
-        title: editListTitle.trim()
+      const isDone = newStatus === 'done';
+      await updateDoc(doc(db, `taskLists/${activeList.id}/tasks`, taskId), {
+        status: newStatus,
+        completed: isDone
       });
-      setActiveList(prev => ({ ...prev, title: editListTitle.trim() }));
-      setShowEditListModal(false);
-      toast.success("List updated!");
+      if (isDone) {
+        updateXP(10);
+        toast.success("+10 XP Transferred", { icon: '⚡' });
+      }
     } catch (err) {
-      toast.error("Update failed");
+      toast.error("Status Sync Failed");
     }
   };
 
-  const handleDeleteList = async () => {
-    if (!window.confirm("Are you sure you want to delete this list and all its tasks?")) return;
-    try {
-      await deleteDoc(doc(db, 'taskLists', activeList.id));
-      setActiveList(null);
-      setShowEditListModal(false);
-      toast.success("List deleted");
-    } catch (err) {
-      toast.error("Delete failed");
+  const handleAiBrainstorm = async () => {
+    if (!activeList) return;
+    setIsAiGenerating(true);
+    const toastId = toast.loading("AI Assistant Brainstorming Tasks...");
+    
+    // Simulate AI logic
+    await new Promise(r => setTimeout(r, 2000));
+    
+    const suggestedTasks = [
+      `Review ${activeList.title} objectives`,
+      `Sync with Nexus Community members`,
+      `Update progress log in AI Core`
+    ];
+
+    for (const task of suggestedTasks) {
+      await handleAddTask(null, task, 'todo');
     }
+
+    toast.success("AI Tasks Generated!", { id: toastId });
+    setIsAiGenerating(false);
   };
 
-  const handleShareList = async (friendId) => {
-    try {
-      await updateDoc(doc(db, 'taskLists', activeList.id), {
-        participants: arrayUnion(friendId)
-      });
-      toast.success("Shared successfully!");
-    } catch (err) {
-      toast.error("Sharing failed");
-    }
-  };
+  const columns = [
+    { id: 'todo', title: 'To Do', icon: <FiAlertCircle className="text-secondary" /> },
+    { id: 'in-progress', title: 'In Progress', icon: <FiClock className="text-primary" /> },
+    { id: 'done', title: 'Completed', icon: <FiCheckSquare className="text-green-400" /> }
+  ];
 
   return (
-    <div className="flex flex-col lg:flex-row h-full gap-6 p-2 lg:p-4">
-      {/* Sidebar: Lists */}
+    <div className="h-full flex flex-col lg:flex-row gap-6 overflow-hidden">
+      
+      {/* Sidebar: Command Center */}
       <div className="w-full lg:w-72 flex flex-col gap-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xl font-black flex items-center gap-2 uppercase tracking-widest text-primary">
-            <FiCheckSquare /> My Lists
+        <div className="flex items-center justify-between p-2">
+          <h2 className="text-xl font-black text-text-main flex items-center gap-2 uppercase tracking-widest">
+            <FiLayout className="text-primary" /> Nexus Tasks
           </h2>
           <button 
             onClick={() => setShowNewListModal(true)}
             className="p-3 bg-primary text-white rounded-2xl hover:bg-primary/90 transition-all shadow-lg shadow-primary/20"
           >
-            <FiPlus size={20} />
+            <FiPlus />
           </button>
         </div>
 
-        <div className="flex lg:flex-col overflow-x-auto lg:overflow-y-auto pb-2 lg:pb-0 gap-2 custom-scrollbar">
+        <div className="flex lg:flex-col gap-3 overflow-x-auto lg:overflow-y-auto p-2 custom-scrollbar">
           {taskLists.map(list => (
-            <div key={list.id} className="relative group flex-shrink-0 lg:flex-shrink-1 w-48 lg:w-full">
-              <button
-                onClick={() => setActiveList(list)}
-                className={`w-full text-left p-4 rounded-2xl border transition-all duration-300 ${activeList?.id === list.id ? 'bg-primary text-white border-primary shadow-xl scale-[1.02]' : 'glass dark:glass-dark border-border/50 hover:border-primary/50'}`}
-              >
-                <p className="font-bold truncate pr-6">{list.title}</p>
-                <p className={`text-[10px] font-black uppercase tracking-widest mt-1 ${activeList?.id === list.id ? 'text-white/70' : 'text-text-muted'}`}>
-                  {list.participants.length > 1 ? 'Shared' : 'Private'}
-                </p>
-              </button>
-              <button 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setActiveList(list);
-                  setEditListTitle(list.title);
-                  setShowEditListModal(true);
-                }}
-                className={`absolute right-3 top-4 p-2 rounded-lg transition-all ${activeList?.id === list.id ? 'text-white/70 hover:text-white' : 'text-text-muted hover:text-primary hover:bg-primary/10'}`}
-                title="Edit List"
-              >
-                <FiEdit2 size={14} />
-              </button>
-            </div>
+            <button
+              key={list.id}
+              onClick={() => setActiveList(list)}
+              className={`w-48 lg:w-full flex flex-col p-4 rounded-2xl border transition-all duration-300 ${
+                activeList?.id === list.id 
+                  ? 'bg-primary/10 border-primary shadow-sm' 
+                  : 'bg-surface border-border hover:border-primary/50'
+              }`}
+            >
+              <span className={`font-bold truncate mb-1 ${activeList?.id === list.id ? 'text-primary' : 'text-text-main'}`}>
+                {list.title}
+              </span>
+              <span className="text-[10px] font-black uppercase tracking-widest text-text-muted opacity-70">
+                {list.participants?.length > 1 ? 'Collaborative' : 'Private'}
+              </span>
+            </button>
           ))}
+        </div>
+
+        <div className="mt-auto premium-card p-4 hidden lg:block border-border/50">
+          <h3 className="text-xs font-black text-primary uppercase tracking-widest mb-3 flex items-center gap-2">
+            <FiCpu /> AI Insights
+          </h3>
+          <p className="text-[10px] text-text-muted leading-relaxed italic">
+            You've completed 5 tasks this week. Keep up the momentum to reach Level {userData?.level + 1}!
+          </p>
         </div>
       </div>
 
-      {/* Main Area: Tasks */}
-      <div className="flex-1 flex flex-col glass dark:glass-dark rounded-2xl border border-border/50 overflow-hidden">
-        {!activeList ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-text-muted">
-            <FiCheckSquare className="w-16 h-16 mb-4 opacity-20" />
-            <p>Select or create a list to start tracking tasks</p>
-          </div>
-        ) : (
+      {/* Main Workspace */}
+      <div className="flex-1 flex flex-col min-h-0">
+        {activeList ? (
           <>
-            {/* Header */}
-            <div className="p-5 lg:p-6 border-b border-border/50 flex items-center justify-between bg-primary/5">
-              <div>
-                <h3 className="text-xl lg:text-2xl font-black text-text-main tracking-tight">{activeList.title}</h3>
-                <p className="text-xs font-bold text-text-muted uppercase tracking-widest">Collaborative Workspace</p>
+            {/* Header Controls */}
+            <div className="premium-card p-4 mb-6 flex flex-col md:flex-row justify-between items-center gap-4 border-border/50">
+              <div className="flex items-center gap-4">
+                <div className="p-3 bg-primary/20 rounded-2xl text-primary">
+                  <FiCheckSquare className="w-6 h-6" />
+                </div>
+                <div>
+                  <h1 className="text-2xl font-black text-text-main tracking-tight">{activeList.title}</h1>
+                  <p className="text-xs text-text-muted font-bold uppercase tracking-widest">Active Workspace</p>
+                </div>
               </div>
-              <div className="flex gap-2">
+
+              <div className="flex items-center gap-2 bg-surface-hover p-1.5 rounded-2xl border border-border">
                 <button 
-                  onClick={() => {
-                    setEditListTitle(activeList.title);
-                    setShowEditListModal(true);
-                  }}
-                  className="p-3 bg-primary/10 text-primary rounded-2xl hover:bg-primary/20 transition-all"
-                  title="Edit List Title"
+                  onClick={() => setViewMode('kanban')}
+                  className={`p-2.5 rounded-xl transition-all ${viewMode === 'kanban' ? 'bg-primary text-white shadow-lg' : 'text-text-muted hover:text-text-main'}`}
                 >
-                  <FiEdit2 size={18} />
-                  <span className="sr-only">Edit</span>
+                  <FiLayout size={20} />
                 </button>
                 <button 
-                  onClick={() => setShowShareModal(true)}
-                  className="p-3 bg-secondary text-white rounded-2xl hover:bg-secondary/90 transition-all shadow-lg shadow-secondary/20"
+                  onClick={() => setViewMode('list')}
+                  className={`p-2.5 rounded-xl transition-all ${viewMode === 'list' ? 'bg-primary text-white shadow-lg' : 'text-text-muted hover:text-text-main'}`}
                 >
-                  <FiUsers size={18} />
+                  <FiList size={20} />
+                </button>
+                <div className="w-px h-6 bg-border mx-2" />
+                <button 
+                  onClick={handleAiBrainstorm}
+                  disabled={isAiGenerating}
+                  className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-primary to-secondary text-white rounded-xl font-black text-[10px] tracking-widest hover:scale-105 transition-all disabled:opacity-50"
+                >
+                  <FiCpu className={isAiGenerating ? 'animate-spin' : ''} /> AI BRAINSTORM
                 </button>
               </div>
             </div>
 
-            {/* Task Input */}
-            <form onSubmit={handleAddTask} className="p-6 border-b border-border/50">
-              <div className="flex gap-3">
-                <input 
-                  type="text" 
-                  value={newTaskText}
-                  onChange={(e) => setNewTaskText(e.target.value)}
-                  placeholder="Add a new task..."
-                  className="flex-1 px-4 py-3 rounded-xl border border-border bg-surface focus:border-primary outline-none"
-                />
-                <button type="submit" className="px-6 bg-primary text-white rounded-xl hover:bg-primary/90 font-bold transition-all">
-                  Add
-                </button>
-              </div>
-            </form>
-
-            {/* List */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-3">
-              <AnimatePresence>
-                {tasks.map(task => (
-                  <motion.div 
-                    key={task.id}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 10 }}
-                    className="flex items-center gap-4 p-4 bg-surface/50 rounded-xl border border-border/30 group hover:border-primary/30 transition-all"
-                  >
-                    <button 
-                      onClick={() => toggleTask(task)}
-                      className={`w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all ${task.completed ? 'bg-green-500 border-green-500 text-white' : 'border-secondary/30 hover:border-primary'}`}
-                    >
-                      {task.completed && <FiCheckSquare />}
-                    </button>
-                    
-                    {editingTask === task.id ? (
-                      <div className="flex-1 flex gap-2">
-                        <input 
-                          type="text"
-                          value={editingTaskText}
-                          onChange={(e) => setEditingTaskText(e.target.value)}
-                          className="flex-1 bg-background border border-primary rounded-lg px-2 py-1 outline-none"
-                          autoFocus
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleEditTask(task.id);
-                            if (e.key === 'Escape') setEditingTask(null);
-                          }}
-                        />
-                        <button onClick={() => handleEditTask(task.id)} className="text-primary font-bold text-xs">Save</button>
-                        <button onClick={() => setEditingTask(null)} className="text-text-muted text-xs">Cancel</button>
+            {/* Kanban / List Content */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar pr-2">
+              {viewMode === 'kanban' ? (
+                <div className="flex flex-col md:flex-row gap-6 h-full min-h-[500px]">
+                  {columns.map(col => (
+                    <div key={col.id} className="flex-1 flex flex-col gap-4">
+                      <div className="flex items-center justify-between px-2">
+                        <h3 className="text-sm font-black text-text-main uppercase tracking-widest flex items-center gap-2">
+                          {col.icon} {col.title}
+                        </h3>
+                        <span className="text-[10px] font-mono text-text-muted bg-surface-hover px-2 py-0.5 rounded-full border border-border">
+                          {tasks.filter(t => t.status === col.id).length}
+                        </span>
                       </div>
-                    ) : (
-                      <span className={`flex-1 text-text-main ${task.completed ? 'line-through opacity-50' : ''}`}>
-                        {task.text}
-                      </span>
-                    )}
-
-                    <div className="flex items-center transition-all">
-                      <button 
-                        onClick={() => {
-                          setEditingTask(task.id);
-                          setEditingTaskText(task.text);
-                        }}
-                        className="p-2 text-text-muted hover:text-primary transition-all"
-                      >
-                        <FiEdit2 size={16} />
-                      </button>
-                      <button 
-                        onClick={() => handleDeleteTask(task.id)}
-                        className="p-2 text-text-muted hover:text-red-500 transition-all"
-                      >
-                        <FiTrash2 />
-                      </button>
+                      
+                      <div className="flex-1 bg-surface-hover/50 rounded-3xl p-4 border border-border/50 space-y-4">
+                        <AnimatePresence mode="popLayout">
+                          {tasks.filter(t => (t.status || (t.completed ? 'done' : 'todo')) === col.id).map(task => (
+                            <motion.div
+                              key={task.id}
+                              layout
+                              initial={{ opacity: 0, scale: 0.9 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              exit={{ opacity: 0, scale: 0.9 }}
+                              className="premium-card p-4 bg-surface border-border hover:border-primary/30 transition-all cursor-pointer group"
+                              onClick={() => {
+                                const nextStatus = col.id === 'todo' ? 'in-progress' : col.id === 'in-progress' ? 'done' : 'todo';
+                                updateTaskStatus(task.id, nextStatus);
+                              }}
+                            >
+                              <p className={`text-sm mb-3 font-medium ${task.completed ? 'line-through opacity-40' : 'text-text-main'}`}>
+                                {task.text}
+                              </p>
+                              <div className="flex items-center justify-between">
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); updateTaskPriority(task.id, task.priority || 'medium'); }}
+                                  className="text-[9px] font-black uppercase tracking-tighter text-primary px-2 py-0.5 bg-primary/10 rounded hover:bg-primary hover:text-white transition-all"
+                                  title="Change Priority"
+                                >
+                                  {task.priority || 'medium'}
+                                </button>
+                                <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button onClick={(e) => { e.stopPropagation(); deleteDoc(doc(db, `taskLists/${activeList.id}/tasks`, task.id)); }} className="text-text-muted hover:text-red-500">
+                                    <FiTrash2 size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            </motion.div>
+                          ))}
+                        </AnimatePresence>
+                        {col.id === 'todo' && (
+                          <div className="mt-4 space-y-3">
+                            <form onSubmit={handleAddTask} className="flex gap-2">
+                              <input 
+                                type="text" 
+                                value={newTaskText}
+                                onChange={(e) => setNewTaskText(e.target.value)}
+                                placeholder="+ Quick Add Task"
+                                className="flex-1 bg-transparent border-b border-white/10 py-2 text-xs outline-none focus:border-primary transition-all text-text-main"
+                              />
+                              <button type="submit" className="p-2 bg-primary text-white rounded-lg hover:bg-primary/90">
+                                <FiPlus size={14} />
+                              </button>
+                            </form>
+                            <div className="flex gap-2">
+                              {['low', 'medium', 'high'].map((p) => (
+                                <button
+                                  key={p}
+                                  type="button"
+                                  onClick={() => setTaskPriority(p)}
+                                  className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter transition-all ${
+                                    taskPriority === p 
+                                      ? 'bg-primary text-white shadow-sm' 
+                                      : 'bg-surface-hover text-text-muted hover:text-primary border border-border'
+                                  }`}
+                                >
+                                  {p}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-3 pb-20">
+                  {tasks.map(task => (
+                    <motion.div 
+                      key={task.id}
+                      layout
+                      className="premium-card flex items-center justify-between gap-4 p-4 hover:border-primary/30 transition-all"
+                    >
+                      <div className="flex items-center gap-4 flex-1">
+                        <button 
+                          onClick={() => updateTaskStatus(task.id, task.completed ? 'todo' : 'done')}
+                          className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all ${task.completed ? 'bg-green-500 border-green-500 text-white' : 'border-white/10 hover:border-primary'}`}
+                        >
+                          {task.completed && <FiCheckSquare size={14} />}
+                        </button>
+                        <span className={`text-sm ${task.completed ? 'line-through opacity-40' : 'text-gray-200'}`}>
+                          {task.text}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <button 
+                          onClick={() => updateTaskPriority(task.id, task.priority || 'medium')}
+                          className="text-[9px] font-black uppercase tracking-widest text-text-muted px-2 py-1 bg-surface-hover rounded border border-border hover:border-primary hover:text-primary transition-all"
+                          title="Change Priority"
+                        >
+                          {task.priority || 'medium'}
+                        </button>
+                        <button onClick={() => deleteDoc(doc(db, `taskLists/${activeList.id}/tasks`, task.id))} className="text-text-muted hover:text-red-500 transition-colors">
+                          <FiTrash2 size={16} />
+                        </button>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
             </div>
           </>
+        ) : (
+          <div className="h-full flex flex-col items-center justify-center text-text-muted opacity-30">
+            <FiCheckSquare className="w-24 h-24 mb-6" />
+            <p className="text-xl font-bold uppercase tracking-[0.2em]">Select a Nexus Workspace</p>
+          </div>
         )}
       </div>
 
-      {/* New List Modal */}
-      {showNewListModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="bg-surface rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <h3 className="text-xl font-bold mb-4">Create New Task List</h3>
-            <form onSubmit={handleCreateList}>
+      {/* Modals remain similarly styled to other pages */}
+      <AnimatePresence>
+        {showNewListModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xl p-4">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="premium-card w-full max-w-md p-8 bg-surface border-primary/20"
+            >
+              <h2 className="text-2xl font-black text-white mb-6 uppercase tracking-tight">Initialize Workspace</h2>
               <input 
                 type="text" 
                 value={newListTitle}
                 onChange={(e) => setNewListTitle(e.target.value)}
-                placeholder="List Title (e.g. Shopping, Project X)"
-                className="w-full px-4 py-3 rounded-xl border border-border bg-background mb-4 outline-none focus:border-primary"
+                placeholder="Workspace Identifier..."
+                className="w-full px-5 py-4 rounded-2xl bg-black/30 border border-white/5 outline-none focus:border-primary transition-all text-white mb-6"
                 autoFocus
               />
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setShowNewListModal(false)} className="flex-1 py-3 bg-secondary/10 rounded-xl font-bold">Cancel</button>
-                <button type="submit" className="flex-1 py-3 bg-primary text-white rounded-xl font-bold">Create</button>
+              <div className="flex gap-4">
+                <button onClick={() => setShowNewListModal(false)} className="flex-1 py-4 bg-white/5 text-text-muted rounded-2xl font-bold hover:bg-white/10">CANCEL</button>
+                <button 
+                  onClick={async () => {
+                    if (!newListTitle.trim()) return;
+                    await addDoc(collection(db, 'taskLists'), {
+                      title: newListTitle.trim(),
+                      ownerId: currentUser.uid,
+                      participants: [currentUser.uid],
+                      createdAt: serverTimestamp()
+                    });
+                    setShowNewListModal(false);
+                    setNewListTitle('');
+                    toast.success("Workspace Online");
+                  }}
+                  className="flex-1 py-4 bg-primary text-white rounded-2xl font-black uppercase tracking-widest shadow-lg shadow-primary/20"
+                >
+                  CREATE
+                </button>
               </div>
-            </form>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
 
-      {/* Share Modal */}
-      {showShareModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="bg-surface rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold">Share "{activeList.title}"</h3>
-              <button onClick={() => setShowShareModal(false)} className="p-2 hover:bg-secondary/10 rounded-full"><FiTrash2 /></button>
-            </div>
-            <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
-              {friends.length === 0 ? (
-                <p className="text-center py-4 text-text-muted text-sm">Add friends first to share lists with them.</p>
-              ) : (
-                friends.map(friend => (
-                  <div key={friend.id} className="flex items-center justify-between p-3 hover:bg-secondary/5 rounded-xl transition-all border border-transparent hover:border-border/50">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center overflow-hidden">
-                        {friend.photoURL ? <img src={friend.photoURL} alt="" /> : friend.username[0]}
-                      </div>
-                      <span className="font-medium text-sm">@{friend.username}</span>
-                    </div>
-                    {activeList.participants.includes(friend.uid) ? (
-                      <span className="text-[10px] bg-green-500/10 text-green-500 px-2 py-1 rounded-full font-bold">Shared</span>
-                    ) : (
-                      <button 
-                        onClick={() => handleShareList(friend.uid)}
-                        className="text-xs bg-primary text-white px-3 py-1.5 rounded-lg hover:bg-primary/90"
-                      >Share</button>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit List Modal */}
-      {showEditListModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="bg-surface rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold">Edit List</h3>
-              <button 
-                onClick={handleDeleteList}
-                className="p-2 text-red-500 hover:bg-red-50 rounded-xl transition-all flex items-center gap-2 text-sm font-bold"
-              >
-                <FiTrash2 /> Delete List
-              </button>
-            </div>
-            <form onSubmit={handleUpdateListTitle}>
-              <input 
-                type="text" 
-                value={editListTitle}
-                onChange={(e) => setEditListTitle(e.target.value)}
-                placeholder="List Title"
-                className="w-full px-4 py-3 rounded-xl border border-border bg-background mb-4 outline-none focus:border-primary"
-                autoFocus
-              />
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setShowEditListModal(false)} className="flex-1 py-3 bg-secondary/10 rounded-xl font-bold">Cancel</button>
-                <button type="submit" className="flex-1 py-3 bg-primary text-white rounded-xl font-bold">Save Changes</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

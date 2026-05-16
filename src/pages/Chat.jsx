@@ -1,26 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { collection, query, where, onSnapshot, addDoc, orderBy, serverTimestamp, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, orderBy, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../utils/firebase';
 import { useAuth } from '../context/AuthContext';
 import { useParams, Link } from 'react-router-dom';
-import { FiSend, FiArrowLeft, FiMessageCircle, FiTrash2, FiEdit3, FiSmile, FiCheck, FiX } from 'react-icons/fi';
+import { FiSend, FiArrowLeft, FiMessageCircle, FiTrash2, FiEdit3, FiSmile, FiPaperclip, FiMic, FiImage, FiMoreVertical, FiCpu, FiCheck, FiVideo, FiPhone, FiCheckCircle, FiSearch, FiCamera, FiHeart } from 'react-icons/fi';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, isToday, isYesterday } from 'date-fns';
+import toast from 'react-hot-toast';
 
 const formatTime = (timestamp) => {
   if (!timestamp || typeof timestamp.toMillis !== 'function') return '';
   const date = new Date(timestamp.toMillis());
-  if (isToday(date)) return format(date, 'hh:mm a');
-  if (isYesterday(date)) return `Yesterday, ${format(date, 'hh:mm a')}`;
-  return format(date, 'MMM d, hh:mm a');
-};
-
-const formatShortTime = (timestamp) => {
-  if (!timestamp || typeof timestamp.toMillis !== 'function') return '';
-  const date = new Date(timestamp.toMillis());
-  if (isToday(date)) return format(date, 'hh:mm a');
-  if (isYesterday(date)) return 'Yesterday';
-  return format(date, 'dd/MM/yy');
+  return format(date, 'hh:mm a');
 };
 
 function Chat() {
@@ -30,70 +21,44 @@ function Chat() {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [activeChat, setActiveChat] = useState(null);
-  const [editingMessage, setEditingMessage] = useState(null);
-  const [editText, setEditText] = useState('');
-  const [typing, setTyping] = useState(false);
   const messagesEndRef = useRef(null);
-  const typingTimeoutRef = useRef(null);
 
-  // Fetch chat list
   useEffect(() => {
     if (!currentUser) return;
     const q = query(collection(db, 'chats'), where('participants', 'array-contains', currentUser.uid));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const fetchedChats = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // Sort manually since orderBy might require index
-      fetchedChats.sort((a, b) => {
-        const timeA = a.updatedAt?.toMillis ? a.updatedAt.toMillis() : 0;
-        const timeB = b.updatedAt?.toMillis ? b.updatedAt.toMillis() : 0;
-        return timeB - timeA;
-      });
+      fetchedChats.sort((a, b) => (b.updatedAt?.toMillis || 0) - (a.updatedAt?.toMillis || 0));
       setChats(fetchedChats);
     });
     return unsubscribe;
   }, [currentUser]);
 
-  // Fetch messages for active chat
   useEffect(() => {
     if (!chatId) return;
     const q = query(collection(db, `chats/${chatId}/messages`), orderBy('createdAt', 'asc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const fetchedMessages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setMessages(fetchedMessages);
-      setTimeout(() => scrollToBottom(), 100);
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
 
-      // Mark unread messages from other user as seen
-      let markedAny = false;
       fetchedMessages.forEach(msg => {
         if (msg.senderId !== currentUser.uid && !msg.isSeen) {
           updateDoc(doc(db, `chats/${chatId}/messages`, msg.id), { isSeen: true }).catch(err => console.log(err));
-          markedAny = true;
         }
       });
-      
-      if (markedAny) {
-        updateDoc(doc(db, 'chats', chatId), { isLastMessageSeen: true }).catch(e => console.log(e));
-      }
     });
     
-    // Find active chat data
     const chat = chats.find(c => c.id === chatId);
     if (chat) setActiveChat(chat);
-
     return unsubscribe;
   }, [chatId, chats]);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!newMessage.trim() || !chatId) return;
-
     const msgText = newMessage.trim();
     setNewMessage('');
-
     try {
       await addDoc(collection(db, `chats/${chatId}/messages`), {
         text: msgText,
@@ -101,280 +66,201 @@ function Chat() {
         isSeen: false,
         createdAt: serverTimestamp(),
       });
-
       await updateDoc(doc(db, 'chats', chatId), {
         lastMessage: msgText,
         lastMessageSenderId: currentUser.uid,
-        isLastMessageSeen: false,
         updatedAt: serverTimestamp()
       });
     } catch (err) {
-      console.error('Error sending message:', err);
+      toast.error('Transmission failed');
     }
-  };
-
-  const handleEditMessage = async (msgId) => {
-    if (!editText.trim()) return;
-    try {
-      await updateDoc(doc(db, `chats/${chatId}/messages`, msgId), {
-        text: editText.trim(),
-        isEdited: true
-      });
-      setEditingMessage(null);
-      setEditText('');
-    } catch (err) {
-      console.error('Error editing message:', err);
-    }
-  };
-
-  const handleDeleteMessage = async (msgId) => {
-    if (!window.confirm("Delete this message?")) return;
-    try {
-      await deleteDoc(doc(db, `chats/${chatId}/messages`, msgId));
-    } catch (err) {
-      console.error('Error deleting message:', err);
-    }
-  };
-
-  const handleAddReaction = async (msgId, emoji, currentReactions = {}) => {
-    try {
-      const reactions = { ...currentReactions };
-      if (!reactions[emoji]) reactions[emoji] = [];
-      
-      if (reactions[emoji].includes(currentUser.uid)) {
-        reactions[emoji] = reactions[emoji].filter(uid => uid !== currentUser.uid);
-      } else {
-        reactions[emoji].push(currentUser.uid);
-      }
-      
-      await updateDoc(doc(db, `chats/${chatId}/messages`, msgId), { reactions });
-    } catch (err) {
-      console.error('Error adding reaction:', err);
-    }
-  };
-
-  const handleTyping = () => {
-    if (!chatId) return;
-    if (!typing) {
-      setTyping(true);
-      updateDoc(doc(db, 'chats', chatId), { [`typing.${currentUser.uid}`]: true });
-    }
-
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => {
-      setTyping(false);
-      updateDoc(doc(db, 'chats', chatId), { [`typing.${currentUser.uid}`]: false });
-    }, 3000);
   };
 
   const getOtherUser = (chat) => {
     const otherId = chat.participants.find(id => id !== currentUser.uid);
-    return chat.participantData?.[otherId] || { username: 'Unknown' };
+    return chat.participantData?.[otherId] || { username: 'Citizen' };
   };
 
-  const otherUserTyping = activeChat?.typing?.[activeChat.participants.find(id => id !== currentUser.uid)];
-
   return (
-    <div className="flex glass dark:glass-dark rounded-2xl overflow-hidden border border-border/50" style={{ height: '85vh' }}>
+    <div className="h-full flex rounded-3xl overflow-hidden glass border border-white/5 shadow-2xl bg-[#000000]">
       
-      {/* Sidebar: Chats List */}
-      <div className={`w-full md:w-80 border-r border-border/50 flex flex-col ${chatId ? 'hidden md:flex' : 'flex'}`}>
-        <div className="p-4 border-b border-border/50">
-          <h2 className="text-xl font-bold flex items-center gap-2">
-            <FiMessageCircle className="text-primary" /> Messages
-          </h2>
+      {/* Sidebar: Instagram Style List */}
+      <div className={`w-full md:w-[350px] bg-black border-r border-white/10 flex flex-col ${chatId ? 'hidden md:flex' : 'flex'}`}>
+        <div className="p-6 pb-2">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-black text-white">Messages</h2>
+            <button className="text-white hover:opacity-70 transition-opacity"><FiEdit3 size={24}/></button>
+          </div>
+          <div className="relative mb-4">
+            <FiSearch className="absolute left-4 top-1/2 -translate-y-1/2 text-text-muted" />
+            <input 
+              type="text" 
+              placeholder="Search transmissions..." 
+              className="w-full bg-[#121212] rounded-xl py-2.5 pl-12 pr-4 text-sm text-white focus:ring-1 focus:ring-white/20 outline-none"
+            />
+          </div>
         </div>
-        <div className="flex-1 overflow-y-auto">
-          {chats.length === 0 ? (
-            <div className="p-4 text-center text-text-muted mt-10">
-              No active chats yet.<br/><Link to="/community" className="text-primary hover:underline">Find people in Community</Link>
+        
+        <div className="flex-1 overflow-y-auto custom-scrollbar">
+          {/* AI Contact */}
+          <div onClick={() => toast.success("AI Syncing...")} className="flex items-center gap-4 px-6 py-4 hover:bg-white/5 cursor-pointer transition-all">
+            <div className="relative">
+              <div className="w-14 h-14 rounded-full bg-gradient-to-tr from-purple-600 to-pink-500 p-0.5 shadow-lg">
+                <div className="w-full h-full rounded-full bg-black flex items-center justify-center">
+                  <FiCpu className="text-white w-7 h-7" />
+                </div>
+              </div>
+              <div className="absolute bottom-0 right-0 w-4 h-4 bg-green-500 rounded-full border-2 border-black" />
             </div>
-          ) : (
-            chats.map(chat => {
-              const otherUser = getOtherUser(chat);
-              return (
-                <Link 
-                  key={chat.id} 
-                  to={`/chat/${chat.id}`}
-                  className={`flex items-center gap-3 p-4 border-b border-border/30 hover:bg-surface/50 transition-colors ${chatId === chat.id ? 'bg-primary/5 border-l-4 border-l-primary' : ''}`}
-                >
-                  <div className="w-12 h-12 rounded-full bg-secondary/20 flex-shrink-0 flex items-center justify-center overflow-hidden">
-                    {otherUser.photoURL ? (
-                      <img src={otherUser.photoURL} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      otherUser.username?.[0]?.toUpperCase()
-                    )}
+            <div className="flex-1 min-w-0">
+              <h4 className="font-bold text-white text-sm">Nexus Intelligence</h4>
+              <p className="text-xs text-text-muted truncate">Always here to help...</p>
+            </div>
+          </div>
+
+          <div className="px-6 py-2">
+            <p className="text-[10px] font-black text-text-muted uppercase tracking-widest">Recent Nodes</p>
+          </div>
+
+          {chats.map(chat => {
+            const otherUser = getOtherUser(chat);
+            const isUnread = chat.lastMessageSenderId !== currentUser.uid && chat.isLastMessageSeen === false;
+            
+            return (
+              <Link 
+                key={chat.id} 
+                to={`/chat/${chat.id}`}
+                className={`flex items-center gap-4 px-6 py-4 transition-all ${chatId === chat.id ? 'bg-white/10' : 'hover:bg-white/5'}`}
+              >
+                <div className="relative">
+                  <div className="w-14 h-14 rounded-full overflow-hidden border border-white/10 bg-[#121212]">
+                    {otherUser.photoURL ? <img src={otherUser.photoURL} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full flex items-center justify-center text-lg font-bold">{otherUser.username?.[0]}</div>}
                   </div>
-                  <div className="flex-1 overflow-hidden">
-                    <div className="flex justify-between items-center">
-                      <h4 className="font-bold text-text-main truncate">@{otherUser.username}</h4>
-                      <div className="flex items-center gap-2">
-                        {chat.lastMessageSenderId !== currentUser.uid && chat.isLastMessageSeen === false && (
-                          <span className="w-2.5 h-2.5 bg-primary rounded-full"></span>
-                        )}
-                        <span className="text-xs text-text-muted">{formatShortTime(chat.updatedAt)}</span>
-                      </div>
-                    </div>
-                    <p className={`text-sm truncate ${chat.lastMessageSenderId !== currentUser.uid && chat.isLastMessageSeen === false ? 'text-text-main font-bold' : 'text-text-muted'}`}>
-                      {chat.lastMessage || 'New Chat'}
-                    </p>
+                  <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-black" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex justify-between items-center">
+                    <h4 className={`text-sm ${isUnread ? 'font-black text-white' : 'font-bold text-gray-300'}`}>@{otherUser.username}</h4>
+                    <span className="text-[10px] text-text-muted">now</span>
                   </div>
-                </Link>
-              )
-            })
-          )}
+                  <p className={`text-xs truncate ${isUnread ? 'text-white font-bold' : 'text-text-muted'}`}>
+                    {chat.lastMessage || 'Open link'}
+                  </p>
+                </div>
+              </Link>
+            );
+          })}
         </div>
       </div>
 
-      {/* Main Chat Area */}
-      <div className={`flex-1 flex flex-col bg-surface/30 ${!chatId ? 'hidden md:flex' : 'flex'}`}>
-        {!chatId ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-text-muted">
-            <FiMessageCircle className="w-16 h-16 mb-4 opacity-20" />
-            <p className="text-lg">Select a chat to start messaging</p>
+      {/* Main Chat Area: Instagram / WhatsApp Hybrid */}
+      <div className={`flex-1 flex flex-col relative bg-black ${!chatId ? 'hidden md:flex' : 'flex'}`}>
+        {!chatId || !activeChat ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-center p-10">
+            <div className="w-24 h-24 rounded-full border-2 border-white/20 flex items-center justify-center mb-6">
+              <FiMessageCircle size={40} className="text-white opacity-40" />
+            </div>
+            <h2 className="text-2xl font-black text-white mb-2">Your Transmissions</h2>
+            <p className="text-text-muted max-w-xs text-sm">Send private messages to a friend or the AI Nexus.</p>
           </div>
         ) : (
           <>
-            {/* Chat Header */}
-            <div className="h-16 border-b border-border/50 flex items-center px-4 bg-surface/50 backdrop-blur-md">
-              <Link to="/chat" className="md:hidden mr-4 p-2 -ml-2 text-text-muted hover:bg-secondary/10 rounded-full">
-                <FiArrowLeft className="w-5 h-5" />
-              </Link>
-              {activeChat && (
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-secondary/20 flex items-center justify-center overflow-hidden">
-                    {getOtherUser(activeChat).photoURL ? (
-                      <img src={getOtherUser(activeChat).photoURL} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      getOtherUser(activeChat).username?.[0]?.toUpperCase()
-                    )}
-                  </div>
-                  <div className="flex flex-col">
-                    <h3 className="font-bold">@{getOtherUser(activeChat).username}</h3>
-                    {otherUserTyping && <span className="text-[10px] text-primary animate-pulse font-medium">typing...</span>}
-                  </div>
+            {/* Header: Instagram Style */}
+            <div className="h-[70px] px-6 flex justify-between items-center border-b border-white/10 bg-black/80 backdrop-blur-xl z-20">
+              <div className="flex items-center gap-4">
+                <Link to="/chat" className="md:hidden text-white"><FiArrowLeft size={24} /></Link>
+                <div className="w-10 h-10 rounded-full overflow-hidden border border-white/10 bg-[#121212]">
+                  {getOtherUser(activeChat).photoURL ? (
+                    <img src={getOtherUser(activeChat).photoURL} className="w-full h-full object-cover" alt="" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center font-bold">{getOtherUser(activeChat).username?.[0]}</div>
+                  )}
                 </div>
-              )}
+                <div>
+                  <h3 className="font-black text-white text-sm">@{getOtherUser(activeChat).username}</h3>
+                  <p className="text-[10px] text-green-500 font-bold">Active now</p>
+                </div>
+              </div>
+              <div className="flex gap-5 text-white opacity-90">
+                <FiPhone size={22} className="cursor-pointer hover:opacity-60" />
+                <FiVideo size={24} className="cursor-pointer hover:opacity-60" />
+                <FiMoreVertical size={22} className="cursor-pointer hover:opacity-60" />
+              </div>
             </div>
 
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {messages.map((msg, i) => {
-                const isMe = msg.senderId === currentUser.uid;
-                const timeStr = formatTime(msg.createdAt);
-                
-                return (
-                  <motion.div 
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    key={msg.id || i} 
-                    className={`flex group ${isMe ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div className="flex flex-col gap-1 max-w-[75%] relative">
-                      {/* Message Bubble */}
-                      <div className={`px-4 py-2.5 rounded-2xl relative ${isMe ? 'bg-primary text-white rounded-br-none' : 'bg-surface border border-border/50 rounded-bl-none shadow-sm'}`}>
-                        {editingMessage === msg.id ? (
-                          <div className="flex flex-col gap-2 min-w-[200px]">
-                            <textarea 
-                              className="w-full bg-transparent border-b border-white/30 focus:border-white outline-none resize-none"
-                              value={editText}
-                              onChange={(e) => setEditText(e.target.value)}
-                              rows="2"
-                              autoFocus
-                            />
-                            <div className="flex justify-end gap-2">
-                              <button onClick={() => setEditingMessage(null)} className="p-1 hover:bg-white/20 rounded"><FiX /></button>
-                              <button onClick={() => handleEditMessage(msg.id)} className="p-1 hover:bg-white/20 rounded"><FiCheck /></button>
+            {/* Messages Area: Clean & Pill Bubbles */}
+            <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-2 custom-scrollbar bg-black relative">
+              {/* Subtle background doodle effect could go here */}
+              <AnimatePresence initial={false}>
+                {messages.map((msg, i) => {
+                  const isMe = msg.senderId === currentUser.uid;
+                  const showAvatar = !isMe && (i === 0 || messages[i-1].senderId !== msg.senderId);
+                  
+                  return (
+                    <motion.div 
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      key={msg.id || i} 
+                      className={`flex ${isMe ? 'justify-end' : 'justify-start'} ${showAvatar ? 'mt-4' : 'mt-0.5'}`}
+                    >
+                      {!isMe && (
+                        <div className="w-8 flex-shrink-0">
+                          {showAvatar && (
+                            <div className="w-7 h-7 rounded-full overflow-hidden bg-[#121212] border border-white/10">
+                              {getOtherUser(activeChat).photoURL ? <img src={getOtherUser(activeChat).photoURL} className="w-full h-full object-cover" /> : <div className="text-[10px] flex items-center justify-center h-full font-bold">{getOtherUser(activeChat).username?.[0]}</div>}
                             </div>
-                          </div>
-                        ) : (
-                          <>
-                            <p className="whitespace-pre-wrap">{msg.text}</p>
-                            {msg.isEdited && <span className="text-[9px] opacity-60 italic block mt-1">(edited)</span>}
-                          </>
-                        )}
-                        
-                        <div className={`flex items-center justify-end gap-1 mt-1 text-[10px] ${isMe ? 'text-white/80' : 'text-text-muted'}`}>
-                          <span>{timeStr}</span>
-                          {isMe && (
-                            <span className={msg.isSeen ? "text-blue-300 font-bold" : "text-white/60"}>
-                              {msg.isSeen ? '✓✓' : '✓'}
-                            </span>
                           )}
                         </div>
-
-                        {/* Reactions Badge */}
-                        {msg.reactions && Object.values(msg.reactions).some(uids => uids.length > 0) && (
-                          <div className={`absolute -bottom-3 ${isMe ? 'right-0' : 'left-0'} flex gap-1`}>
-                            {Object.entries(msg.reactions).map(([emoji, uids]) => uids.length > 0 && (
-                              <button 
-                                key={emoji}
-                                onClick={() => handleAddReaction(msg.id, emoji, msg.reactions)}
-                                className={`bg-surface border border-border/50 rounded-full px-1.5 py-0.5 text-xs shadow-sm hover:scale-110 transition-transform ${uids.includes(currentUser.uid) ? 'border-primary ring-1 ring-primary/30' : ''}`}
-                              >
-                                {emoji} <span className="text-[10px] opacity-70">{uids.length}</span>
-                              </button>
-                            ))}
+                      )}
+                      
+                      <div className={`max-w-[70%] group flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                        <div className={`px-4 py-2.5 rounded-[22px] text-[15px] leading-snug ${
+                          isMe 
+                            ? 'bg-gradient-to-tr from-primary to-indigo-500 text-white shadow-md' 
+                            : 'bg-[#262626] text-white border border-white/5'
+                        } ${isMe ? 'rounded-tr-md' : 'rounded-tl-md'}`}>
+                          {msg.text}
+                        </div>
+                        {i === messages.length - 1 && (
+                          <div className="mt-1 flex items-center gap-1 opacity-40 text-[9px] font-bold text-white uppercase tracking-tighter">
+                            <span>{formatTime(msg.createdAt)}</span>
+                            {isMe && <span>• Seen</span>}
                           </div>
                         )}
                       </div>
-
-                      {/* Hover Actions */}
-                      <div className={`absolute top-0 -translate-y-full flex gap-1 p-1 opacity-0 group-hover:opacity-100 transition-opacity ${isMe ? 'right-0' : 'left-0'}`}>
-                        <button 
-                          onClick={() => handleAddReaction(msg.id, '❤️', msg.reactions)}
-                          className="p-1.5 glass dark:glass-dark rounded-full hover:bg-pink-500/10 hover:text-pink-500 text-xs"
-                        >❤️</button>
-                        <button 
-                          onClick={() => handleAddReaction(msg.id, '👍', msg.reactions)}
-                          className="p-1.5 glass dark:glass-dark rounded-full hover:bg-blue-500/10 hover:text-blue-500 text-xs"
-                        >👍</button>
-                        <button 
-                          onClick={() => handleAddReaction(msg.id, '😂', msg.reactions)}
-                          className="p-1.5 glass dark:glass-dark rounded-full hover:bg-yellow-500/10 hover:text-yellow-500 text-xs"
-                        >😂</button>
-                        {isMe && (
-                          <>
-                            <button 
-                              onClick={() => { setEditingMessage(msg.id); setEditText(msg.text); }}
-                              className="p-1.5 glass dark:glass-dark rounded-full hover:bg-primary/10 hover:text-primary text-xs"
-                            ><FiEdit3 /></button>
-                            <button 
-                              onClick={() => handleDeleteMessage(msg.id)}
-                              className="p-1.5 glass dark:glass-dark rounded-full hover:bg-red-500/10 hover:text-red-500 text-xs"
-                            ><FiTrash2 /></button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </motion.div>
-                );
-              })}
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Input Area */}
-            <form onSubmit={handleSendMessage} className="p-4 border-t border-border/50 bg-surface/50 backdrop-blur-md">
-              <div className="flex items-center gap-2">
-                <input 
-                  type="text" 
-                  value={newMessage}
-                  onChange={(e) => {
-                    setNewMessage(e.target.value);
-                    handleTyping();
-                  }}
-                  placeholder="Type a message..."
-                  className="flex-1 px-4 py-3 rounded-xl border border-border bg-surface focus:border-primary outline-none transition-all"
-                />
-                <button 
-                  type="submit" 
-                  disabled={!newMessage.trim()}
-                  className="p-3 bg-primary text-white rounded-xl hover:bg-primary/90 disabled:opacity-50 transition-all flex items-center justify-center"
-                >
-                  <FiSend className="w-5 h-5" />
-                </button>
-              </div>
-            </form>
+            {/* Input Bar: Instagram Style Pill */}
+            <div className="p-4 bg-black">
+              <form onSubmit={handleSendMessage} className="max-w-4xl mx-auto">
+                <div className="bg-[#121212] border border-white/10 rounded-[30px] flex items-center px-4 py-1.5 focus-within:border-white/20 transition-all">
+                  <div className="p-2 bg-primary/20 rounded-full text-primary mr-2 cursor-pointer hover:bg-primary hover:text-white transition-all">
+                    <FiCamera size={20} />
+                  </div>
+                  <input 
+                    type="text" 
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                    placeholder="Message..."
+                    className="flex-1 bg-transparent px-3 py-3 outline-none text-white text-[14px] placeholder:text-text-muted"
+                  />
+                  {newMessage.trim() ? (
+                    <button type="submit" className="text-primary font-black px-4 py-2 text-sm hover:opacity-80 transition-opacity">Send</button>
+                  ) : (
+                    <div className="flex items-center gap-4 text-white opacity-90 pr-2">
+                      <FiMic size={20} className="cursor-pointer hover:opacity-60" />
+                      <FiImage size={20} className="cursor-pointer hover:opacity-60" />
+                      <FiHeart size={20} className="cursor-pointer hover:opacity-60" />
+                    </div>
+                  )}
+                </div>
+              </form>
+            </div>
           </>
         )}
       </div>
